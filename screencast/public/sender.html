@@ -24,6 +24,9 @@
   <label style="display:flex;gap:8px;align-items:center;margin-top:14px">
     <input id="audio" type="checkbox" checked style="width:auto"> Chia sẻ cả âm thanh
   </label>
+  <label style="display:flex;gap:8px;align-items:center;margin-top:8px">
+    <input id="mute" type="checkbox" checked style="width:auto"> Tắt tiếng trên máy này (chỉ phát ra TV)
+  </label>
 
   <button id="start">Chọn màn hình &amp; bắt đầu chiếu</button>
   <button id="stop" class="danger" style="display:none">Dừng chiếu</button>
@@ -31,7 +34,9 @@
 
   <small id="tips">
     Chọn <b>Toàn bộ màn hình</b> hoặc <b>Cửa sổ / Tab</b>. Để có tiếng: tích “Chia sẻ âm thanh hệ thống/tab” trong hộp thoại của Chrome/Edge.
-    Trên macOS, trình duyệt chỉ chia sẻ được tiếng của tab.
+    Trên macOS, trình duyệt chỉ chia sẻ được tiếng của tab.<br>
+    <b>Muốn máy tính im lặng, chỉ phát ra TV:</b> chia sẻ một <b>Tab Chrome/Edge</b> (tiếng của tab sẽ tự tắt trên máy này).
+    Nếu chọn Toàn bộ màn hình thì trình duyệt không tắt được tiếng loa máy tính, anh hạ âm lượng máy xuống 0 là TV vẫn có tiếng.
   </small>
 </div></div>
 <script src="/config.js"></script>
@@ -48,7 +53,7 @@ $('code').addEventListener('input', (e) => (e.target.value = e.target.value.repl
 function status(t, cls = '') { const s = $('status'); s.textContent = t; s.className = 'status ' + cls; }
 function setRunning(on) {
   $('start').style.display = on ? 'none' : ''; $('stop').style.display = on ? '' : 'none';
-  $('code').disabled = $('mode').disabled = $('audio').disabled = on;
+  $('code').disabled = $('mode').disabled = $('audio').disabled = $('mute').disabled = on;
 }
 
 function stopAll(msg, cls) {
@@ -69,7 +74,11 @@ async function start() {
   try {
     stream = await navigator.mediaDevices.getDisplayMedia({
       video: { frameRate: { ideal: 30, max: 60 } },
-      audio: $('audio').checked ? { echoCancellation: false, noiseSuppression: false, autoGainControl: false } : false,
+      audio: $('audio').checked ? {
+        echoCancellation: false, noiseSuppression: false, autoGainControl: false,
+        suppressLocalAudioPlayback: $('mute').checked,   // Chrome/Edge: tắt tiếng trên máy gửi khi chia sẻ tab
+      } : false,
+      systemAudio: 'include',
     });
   } catch (e) { stream = null; return status('Bạn đã hủy chọn màn hình.', 'err'); }
 
@@ -148,6 +157,11 @@ async function adaptBitrate() {
     }
     const s = $('status');
     s.textContent += relayed ? ' · qua máy chủ trung gian' : ' · kết nối trực tiếp';
+    const at = stream && stream.getAudioTracks()[0];
+    if (at && $('mute').checked) {
+      const muted = at.getSettings && at.getSettings().suppressLocalAudioPlayback === true;
+      s.textContent += muted ? ' · đã tắt tiếng trên máy này' : ' · máy này vẫn còn tiếng (hạ âm lượng máy xuống 0 hoặc chia sẻ Tab)';
+    }
   } catch (e) {}
 }
 
