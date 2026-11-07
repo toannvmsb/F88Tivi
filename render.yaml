@@ -1,0 +1,20 @@
+# Render Blueprint: server signaling cho ScreenCast (WebSocket).
+services:
+  - type: web
+    name: screencast-signal
+    runtime: node
+    plan: free
+    rootDir: screencast
+    buildCommand: npm install --omit=dev
+    startCommand: node server.js
+    healthCheckPath: /healthz
+    envVars:
+      - key: CLOUD
+        value: "1"
+      # Điền sau khi có địa chỉ Netlify, ví dụ: https://ten-ban.netlify.app
+      - key: ALLOWED_ORIGINS
+        sync: false
+      # (Tùy chọn) mảng JSON iceServers kèm TURN, ví dụ:
+      # [{"urls":"stun:stun.l.google.com:19302"},{"urls":"turn:host:443","username":"u","credential":"p"}]
+      - key: ICE_SERVERS_JSON
+        sync: false

@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ScreenCast - Màn hình nhận</title>
+<style>
+  html, body { margin:0; height:100%; background:#000; color:#eef2fa; font-family: system-ui, "Segoe UI", Roboto, sans-serif; overflow:hidden; }
+  video { position:fixed; inset:0; width:100%; height:100%; object-fit:contain; background:#000; display:none; }
+  #idle { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; background:radial-gradient(circle at 30% 20%, #1c2a4a, #0b0f1a 70%); text-align:center; padding:24px; }
+  #idle h1 { font-size:3vw; margin:0 0 1vw; font-weight:500; color:#93a0bd; }
+  #code { font-size:11vw; font-weight:700; letter-spacing:1vw; line-height:1; }
+  #qr { background:#fff; padding:14px; border-radius:16px; margin-top:3vw; }
+  #qr svg, #qr img { display:block; width:16vw; height:16vw; min-width:140px; min-height:140px; }
+  #url { margin-top:2vw; font-size:1.8vw; color:#93a0bd; word-break:break-all; }
+  #status { margin-top:1.2vw; font-size:1.6vw; color:#2ecc8f; min-height:1.6em; }
+  #hint { position:fixed; left:50%; bottom:5%; transform:translateX(-50%); background:#000b; padding:12px 22px; border-radius:30px; font-size:20px; display:none; z-index:5; }
+</style>
+</head>
+<body>
+<video id="video" autoplay playsinline></video>
+<div id="idle">
+  <h1>Nhập mã này trên máy cần chiếu</h1>
+  <div id="code">------</div>
+  <div id="qr"></div>
+  <div id="url"></div>
+  <div id="status">Đang kết nối máy chủ…</div>
+</div>
+<div id="hint"></div>
+<script src="/vendor/qrcode.js"></script>
+<script src="/config.js"></script>
+<script>
+let ICE_SERVERS = window.SC_CONFIG.ICE_SERVERS; // server có thể gửi danh sách khác (kèm TURN) khi đăng ký
+scWake();
+const $ = (id) => document.getElementById(id);
+const video = $('video');
+let ws, pc, pending = [], retry = 0, hintTimer;
+
+function showHint(t, ms = 6000) {
+  const h = $('hint'); h.textContent = t; h.style.display = 'block';
+  clearTimeout(hintTimer); hintTimer = setTimeout(() => (h.style.display = 'none'), ms);
+}
+function setStatus(t) { $('status').textContent = t; }
+function showVideo(on) { video.style.display = on ? 'block' : 'none'; $('idle').style.display = on ? 'none' : 'flex'; }
+
+function drawQR(code) {
+  const url = `${location.origin}/sender.html?code=${code}`;
+  try {
+    const qr = qrcode(0, 'M'); qr.addData(url); qr.make();
+    $('qr').innerHTML = qr.createSvgTag({ cellSize: 6, margin: 0, scalable: true });
+  } catch (e) { $('qr').style.display = 'none'; }
+  $('url').textContent = `${location.origin}/sender.html`;
+}
+
+function closePeer() {
+  if (pc) { pc.ontrack = pc.onicecandidate = pc.onconnectionstatechange = null; pc.close(); pc = null; }
+  pending = [];
+  video.srcObject = null;
+  showVideo(false);
+}
+
+async function startPlayback() {
+  video.muted = false;
+  try { await video.play(); }
+  catch {
+    video.muted = true;
+    try { await video.play(); } catch {}
+    showHint('Bấm OK / chạm màn hình để bật tiếng', 15000);
+  }
+}
+
+function newPeer() {
+  closePeer();
+  pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  pc.onicecandidate = (e) => { if (e.candidate) ws.send(JSON.stringify({ type: 'signal', data: { candidate: e.candidate } })); };
+  pc.ontrack = (e) => {
+    if (video.srcObject !== e.streams[0]) { video.srcObject = e.streams[0]; showVideo(true); startPlayback(); }
+    try { e.receiver.jitterBufferTarget = 0; } catch {}      // giảm độ trễ
+    try { e.receiver.playoutDelayHint = 0; } catch {}
+  };
+  pc.onconnectionstatechange = () => {
+    if (!pc) return;
+    if (pc.connectionState === 'failed' || pc.connectionState === 'closed') { closePeer(); setStatus('Mất kết nối. Đang chờ máy chiếu…'); }
+  };
+}
+
+async function onSignal(d) {
+  if (d.sdp) {
+    newPeer();
+    await pc.setRemoteDescription(d.sdp);
+    for (const c of pending) await pc.addIceCandidate(c).catch(() => {});
+    pending = [];
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    ws.send(JSON.stringify({ type: 'signal', data: { sdp: pc.localDescription } }));
+  } else if (d.candidate) {
+    if (pc && pc.remoteDescription) await pc.addIceCandidate(d.candidate).catch(() => {});
+    else pending.push(d.candidate);
+  }
+}
+
+function connect() {
+  ws = new WebSocket(scWsUrl());
+  ws.onopen = () => {
+    retry = 0;
+    ws.send(JSON.stringify({ type: 'register', code: localStorage.getItem('sc_code') || undefined }));
+  };
+  ws.onmessage = (ev) => {
+    const m = JSON.parse(ev.data);
+    if (m.type === 'registered') {
+      if (m.iceServers) ICE_SERVERS = m.iceServers;
+      localStorage.setItem('sc_code', m.code);
+      $('code').textContent = m.code; drawQR(m.code);
+      setStatus('Sẵn sàng. Đang chờ máy chiếu…');
+    } else if (m.type === 'sender-joined') setStatus('Có máy đang kết nối…');
+    else if (m.type === 'sender-left') { closePeer(); setStatus('Máy chiếu đã dừng. Sẵn sàng cho lần tiếp theo.'); }
+    else if (m.type === 'signal') onSignal(m.data).catch((e) => console.error(e));
+  };
+  ws.onclose = () => {
+    closePeer();
+    setStatus('Mất kết nối máy chủ, đang thử lại…');
+    setTimeout(connect, Math.min(1000 * ++retry, 5000));
+  };
+}
+
+function interact() {
+  if (video.srcObject) { video.muted = false; video.play().catch(() => {}); $('hint').style.display = 'none'; }
+  if (!document.fullscreenElement && document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {});
+}
+addEventListener('click', interact);
+addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') interact(); });
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState === 'visible') try { await navigator.wakeLock.request('screen'); } catch {}
+});
+try { navigator.wakeLock.request('screen').catch(() => {}); } catch {}
+
+connect();
+</script>
+</body>
+</html>

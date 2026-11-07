@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ScreenCast - Chiếu màn hình</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="wrap"><div class="card">
+  <h1>Chiếu màn hình lên TV</h1>
+  <p class="sub">Nhập mã 6 số đang hiện trên TV</p>
+
+  <input id="code" type="text" inputmode="numeric" maxlength="6" placeholder="------" autocomplete="off">
+
+  <label for="mode">Nội dung chiếu</label>
+  <select id="mode">
+    <option value="detail">Slide / tài liệu (chữ sắc nét)</option>
+    <option value="motion">Video / phim (mượt, có tiếng)</option>
+  </select>
+
+  <label style="display:flex;gap:8px;align-items:center;margin-top:14px">
+    <input id="audio" type="checkbox" checked style="width:auto"> Chia sẻ cả âm thanh
+  </label>
+
+  <button id="start">Chọn màn hình &amp; bắt đầu chiếu</button>
+  <button id="stop" class="danger" style="display:none">Dừng chiếu</button>
+  <div id="status" class="status"></div>
+
+  <small id="tips">
+    Chọn <b>Toàn bộ màn hình</b> hoặc <b>Cửa sổ / Tab</b>. Để có tiếng: tích “Chia sẻ âm thanh hệ thống/tab” trong hộp thoại của Chrome/Edge.
+    Trên macOS, trình duyệt chỉ chia sẻ được tiếng của tab.
+  </small>
+</div></div>
+<script src="/config.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+let ws, pc, stream;
+let ICE_SERVERS = window.SC_CONFIG.ICE_SERVERS;
+scWake();
+
+const params = new URLSearchParams(location.search);
+$('code').value = (params.get('code') || localStorage.getItem('sc_send_code') || '').replace(/\D/g, '').slice(0, 6);
+$('code').addEventListener('input', (e) => (e.target.value = e.target.value.replace(/\D/g, '')));
+
+function status(t, cls = '') { const s = $('status'); s.textContent = t; s.className = 'status ' + cls; }
+function setRunning(on) {
+  $('start').style.display = on ? 'none' : ''; $('stop').style.display = on ? '' : 'none';
+  $('code').disabled = $('mode').disabled = $('audio').disabled = on;
+}
+
+function stopAll(msg, cls) {
+  if (pc) { pc.close(); pc = null; }
+  if (stream) { stream.getTracks().forEach((t) => { t.onended = null; t.stop(); }); stream = null; }
+  if (ws) { ws.onclose = null; ws.close(); ws = null; }
+  setRunning(false);
+  status(msg || 'Đã dừng chiếu.', cls);
+}
+
+async function start() {
+  const code = $('code').value.trim();
+  if (!/^\d{6}$/.test(code)) return status('Vui lòng nhập đủ 6 số.', 'err');
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+    return status('Trình duyệt này không hỗ trợ chia sẻ màn hình (điện thoại sẽ có ứng dụng riêng). Hãy dùng Chrome/Edge/Firefox trên máy tính.', 'err');
+  }
+  const mode = $('mode').value;
+  try {
+    stream = await navigator.mediaDevices.getDisplayMedia({
+      video: { frameRate: { ideal: 30, max: 60 } },
+      audio: $('audio').checked ? { echoCancellation: false, noiseSuppression: false, autoGainControl: false } : false,
+    });
+  } catch (e) { stream = null; return status('Bạn đã hủy chọn màn hình.', 'err'); }
+
+  const vt = stream.getVideoTracks()[0];
+  try { vt.contentHint = mode; } catch {}
+  vt.onended = () => stopAll('Bạn đã dừng chia sẻ.');
+  localStorage.setItem('sc_send_code', code);
+  setRunning(true);
+  status('Đang kết nối tới TV…');
+
+  ws = new WebSocket(scWsUrl());
+  ws.onopen = () => ws.send(JSON.stringify({ type: 'join', code }));
+  ws.onclose = () => stopAll('Mất kết nối máy chủ.', 'err');
+  ws.onmessage = async (ev) => {
+    const m = JSON.parse(ev.data);
+    if (m.type === 'error') {
+      stopAll(m.reason === 'busy' ? 'TV đang có người khác chiếu.'
+        : m.reason === 'rate_limited' ? 'Nhập sai quá nhiều lần, vui lòng thử lại sau 1 phút.'
+        : 'Không tìm thấy TV với mã này. Kiểm tra lại mã.', 'err');
+    } else if (m.type === 'joined') {
+      if (m.iceServers) ICE_SERVERS = m.iceServers;
+      await beginPeer(mode);
+    } else if (m.type === 'receiver-left') {
+      stopAll('TV đã ngắt kết nối.', 'err');
+    } else if (m.type === 'signal') {
+      const d = m.data;
+      if (d.sdp) await pc.setRemoteDescription(d.sdp);
+      else if (d.candidate) await pc.addIceCandidate(d.candidate).catch(() => {});
+    }
+  };
+}
+
+async function beginPeer(mode) {
+  pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  pc.onicecandidate = (e) => { if (e.candidate && ws) ws.send(JSON.stringify({ type: 'signal', data: { candidate: e.candidate } })); };
+  pc.onconnectionstatechange = () => {
+    if (!pc) return;
+    if (pc.connectionState === 'connected') {
+      status('🟢 Đang chiếu lên TV' + (stream.getAudioTracks().length ? ' (có âm thanh)' : ' (không có âm thanh)'), 'ok');
+    } else if (pc.connectionState === 'failed') stopAll('Không kết nối được tới TV (mạng chặn kết nối trực tiếp, cần TURN server).', 'err');
+  };
+  stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+
+  for (const s of pc.getSenders()) {
+    if (!s.track) continue;
+    const p = s.getParameters();
+    if (!p.encodings || !p.encodings.length) p.encodings = [{}];
+    if (s.track.kind === 'video') {
+      p.encodings[0].maxBitrate = 12_000_000;                 // LAN: chất lượng cao
+      p.degradationPreference = mode === 'detail' ? 'maintain-resolution' : 'balanced';
+    } else p.encodings[0].maxBitrate = 192_000;
+    try { await s.setParameters(p); } catch {}
+  }
+
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  ws.send(JSON.stringify({ type: 'signal', data: { sdp: pc.localDescription } }));
+}
+
+$('start').onclick = start;
+$('stop').onclick = () => stopAll();
+</script>
+</body>
+</html>
