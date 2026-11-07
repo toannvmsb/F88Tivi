@@ -3,7 +3,7 @@
 // - Khi đưa trang lên Netlify: điền địa chỉ server signaling trên Render, ví dụ
 //   WS_URL: 'wss://screencast-signal.onrender.com/ws'
 window.SC_CONFIG = {
-  WS_URL: '',
+  WS_URL: 'wss://screencast-signal.onrender.com/ws',
   // STUN mặc định. Thông tin TURN (nếu có) nên đặt ở biến ICE_SERVERS_JSON trên server, không ghi vào file này.
   ICE_SERVERS: [{ urls: 'stun:stun.l.google.com:19302' }],
 };
