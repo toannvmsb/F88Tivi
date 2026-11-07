@@ -107,6 +107,7 @@ async function beginPeer(mode) {
     if (!pc) return;
     if (pc.connectionState === 'connected') {
       status('🟢 Đang chiếu lên TV' + (stream.getAudioTracks().length ? ' (có âm thanh)' : ' (không có âm thanh)'), 'ok');
+      adaptBitrate();
     } else if (pc.connectionState === 'failed') stopAll('Không kết nối được tới TV (mạng chặn kết nối trực tiếp, cần TURN server).', 'err');
   };
   stream.getTracks().forEach((t) => pc.addTrack(t, stream));
@@ -125,6 +126,27 @@ async function beginPeer(mode) {
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
   ws.send(JSON.stringify({ type: 'signal', data: { sdp: pc.localDescription } }));
+}
+
+// Nếu hình đi qua TURN (mạng khác), hạ bitrate để tiết kiệm băng thông TURN; trực tiếp thì để cao.
+async function adaptBitrate() {
+  try {
+    const stats = await pc.getStats();
+    let pair;
+    stats.forEach((r) => { if (r.type === 'transport' && r.selectedCandidatePairId) pair = stats.get(r.selectedCandidatePairId); });
+    if (!pair) stats.forEach((r) => { if (r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded') pair = r; });
+    const l = pair && stats.get(pair.localCandidateId), rm = pair && stats.get(pair.remoteCandidateId);
+    const relayed = !!((l && l.candidateType === 'relay') || (rm && rm.candidateType === 'relay'));
+    const vs = pc.getSenders().find((s) => s.track && s.track.kind === 'video');
+    if (vs) {
+      const p = vs.getParameters();
+      if (!p.encodings || !p.encodings.length) p.encodings = [{}];
+      p.encodings[0].maxBitrate = relayed ? 3_000_000 : 12_000_000;
+      await vs.setParameters(p);
+    }
+    const s = $('status');
+    s.textContent += relayed ? ' · qua máy chủ trung gian' : ' · kết nối trực tiếp';
+  } catch (e) {}
 }
 
 $('start').onclick = start;
