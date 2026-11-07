@@ -3,23 +3,26 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ScreenCast - Màn hình nhận</title>
+<title>F88Tivi - Màn hình nhận</title>
+<link rel="icon" href="/favicon.png" type="image/png">
 <style>
-  html, body { margin:0; height:100%; background:#000; color:#eef2fa; font-family: system-ui, "Segoe UI", Roboto, sans-serif; overflow:hidden; }
+  html, body { margin:0; height:100%; background:#000; color:#fff; font-family: Montserrat, "Open Sans", Roboto, Arial, sans-serif; overflow:hidden; }
   video { position:fixed; inset:0; width:100%; height:100%; object-fit:contain; background:#000; display:none; }
-  #idle { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; background:radial-gradient(circle at 30% 20%, #1c2a4a, #0b0f1a 70%); text-align:center; padding:24px; }
-  #idle h1 { font-size:3vw; margin:0 0 1vw; font-weight:500; color:#93a0bd; }
-  #code { font-size:11vw; font-weight:700; letter-spacing:1vw; line-height:1; }
-  #qr { background:#fff; padding:14px; border-radius:16px; margin-top:3vw; }
-  #qr svg, #qr img { display:block; width:16vw; height:16vw; min-width:140px; min-height:140px; }
-  #url { margin-top:2vw; font-size:1.8vw; color:#93a0bd; word-break:break-all; }
-  #status { margin-top:1.2vw; font-size:1.6vw; color:#2ecc8f; min-height:1.6em; }
+  #idle { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; background:linear-gradient(135deg, #18745C, #1C5658); text-align:center; padding:24px; }
+  #logo { height:6vw; max-height:100px; margin-bottom:1.5vw; }
+  #idle h1 { font-size:2.6vw; margin:0 0 .6vw; font-weight:500; color:#d6eadf; }
+  #code { font-size:9vw; font-weight:800; letter-spacing:1vw; line-height:1; }
+  #qr { background:#fff; padding:12px; border-radius:16px; margin-top:2vw; }
+  #qr svg, #qr img { display:block; width:13vw; height:13vw; min-width:140px; min-height:140px; }
+  #url { margin-top:1.6vw; font-size:1.6vw; color:#d6eadf; word-break:break-all; }
+  #status { margin-top:1vw; font-size:1.5vw; color:#62E222; font-weight:600; min-height:1.6em; }
   #hint { position:fixed; left:50%; bottom:5%; transform:translateX(-50%); background:#000b; padding:12px 22px; border-radius:30px; font-size:20px; display:none; z-index:5; }
 </style>
 </head>
 <body>
 <video id="video" autoplay playsinline></video>
 <div id="idle">
+  <img id="logo" src="/logo-white.png" alt="F88Tivi">
   <h1>Nhập mã này trên máy cần chiếu</h1>
   <div id="code">------</div>
   <div id="qr"></div>

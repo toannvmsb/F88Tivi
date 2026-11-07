@@ -10,7 +10,7 @@
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
     <application
-        android:label="ScreenCast TV"
+        android:label="F88Tivi"
         android:icon="@drawable/icon"
         android:banner="@drawable/banner"
         android:hardwareAccelerated="true"

@@ -9,7 +9,7 @@ JAR="$SDK/platforms/android-34/android.jar"
 OUT=build
 rm -rf "$OUT" && mkdir -p "$OUT"/{gen,classes,dex}
 
-python tools/gen_icons.py res/drawable
+python tools/gen_icons.py res/drawable-xhdpi
 "$BT/aapt2.exe" compile --dir res -o "$OUT/res.zip"
 "$BT/aapt2.exe" link -o "$OUT/unsigned.apk" -I "$JAR" --manifest AndroidManifest.xml \
   --min-sdk-version 21 --target-sdk-version 34 --version-code 1 --version-name 1.0 \
