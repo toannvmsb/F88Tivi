@@ -50,11 +50,13 @@ TrinhchieuTV/
    │   ├─ config.js       WS_URL (đang trỏ Render) + STUN mặc định; có scWsUrl()/scWake()
    │   ├─ vendor/qrcode.js
    │   └─ logo.png, logo-white.png, favicon.png   (sinh tự động từ assets/f88-logo.png)
-   └─ tvapp/              app Android TV (không dùng Gradle)
+   ├─ tvapp/              app Android TV (không dùng Gradle)
        ├─ AndroidManifest.xml, src/vn/screencast/tv/MainActivity.java
        ├─ res/drawable-xhdpi/{icon,banner}.png    (sinh tự động)
        ├─ tools/gen_icons.py                      sinh logo web + icon/banner từ assets/f88-logo.png (cần Pillow)
        └─ build.sh                                build APK bằng aapt2+javac+d8+apksigner
+
+winaudio/               app Windows "F88Tivi Audio" (.NET 8 WinForms): bắt tiếng của 1 ứng dụng (WASAPI process loopback) → WebSocket 127.0.0.1:48221 → sender.html. Xem winaudio/README.md. Build: `bash winaudio/build.sh` (cần .NET SDK 8)
 ```
 
 ## 4. Giao thức signaling (server.js)
@@ -107,7 +109,7 @@ Xanh đậm `#18745C` (chủ đạo), xanh rừng `#1C5658`, lime `#62E222`, và
 ## 10. Việc tiếp theo (theo thứ tự người dùng đã chọn)
 1. **App Android gửi màn hình** (MediaProjection + foreground service; có thể Flutter + `flutter_webrtc` để dùng chung cho cả iOS, Windows, macOS).
 2. **App iPhone gửi** (ReplayKit *Broadcast Upload Extension*; Safari iOS **không** hỗ trợ `getDisplayMedia`). Cần tài khoản Apple Developer.
-3. (Tùy chọn) app Windows nhỏ để đổi đường âm thanh sang thiết bị ảo ⇒ máy gửi hoàn toàn im lặng như Miracast.
+3. ~~App Windows để máy gửi im lặng~~ — **đã làm** (`winaudio/`, 2026-11-09): đã đo trên máy dev là process loopback giữ nguyên tín hiệu khi tắt tiếng/hạ âm lượng về 0, nhưng **chưa thử cả chuỗi với TV thật**; chưa có chỉnh độ trễ âm/hình, chưa có trình cài đặt.
 4. Sửa nhỏ: mã trên TV đổi sau khi tắt hẳn app (localStorage WebView chưa kịp ghi) ⇒ lưu mã bền hơn (SharedPreferences qua cầu nối JS hoặc server nhớ theo thiết bị).
 5. **Thương mại hóa** (chưa bắt đầu): license theo TV, gói doanh nghiệp, chiếu khác mạng là tính năng trả phí, quản lý nhiều TV; chuyển Render sang gói Starter (không ngủ) và TURN trả phí/coturn; gỡ nhãn "Powered by Netlify" (gói miễn phí hiện ở góc TV).
 
@@ -117,6 +119,7 @@ Xanh đậm `#18745C` (chủ đạo), xanh rừng `#1C5658`, lime `#62E222`, và
 - Render free ngủ sau ~15 phút ⇒ lần đầu có thể chờ 30–60 giây.
 - `ICE_SERVERS_JSON` sai định dạng ⇒ server ghi log "không phải JSON hợp lệ, bỏ qua" và không gửi TURN ⇒ 4G báo "Không kết nối được tới TV".
 - DRM (Netflix…) sẽ đen màn hình khi chiếu.
+- Chia sẻ Toàn bộ màn hình trên Windows: tiếng lấy sau âm lượng loa ⇒ hạ loa về 0 thì TV mất tiếng (đã đo). Muốn tắt loa máy mà TV vẫn có tiếng: chia sẻ Tab, hoặc dùng app `winaudio/`.
 - macOS chỉ chia sẻ được tiếng của Tab; Windows (Chrome/Edge) chia sẻ được tiếng hệ thống.
 - Một số WebView TV có thể không phân giải ICE candidate mDNS `.local` ⇒ rơi sang STUN/TURN; nếu chậm trong LAN thì kiểm tra lại.
 - `192.168.0.196` là IP **máy tính**, không phải TV (từng nhầm). IP máy có thể đổi ⇒ nên đặt IP tĩnh trong router.

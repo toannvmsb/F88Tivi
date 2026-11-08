@@ -27,6 +27,9 @@
   <label style="display:flex;gap:8px;align-items:center;margin-top:8px">
     <input id="mute" type="checkbox" checked style="width:auto"> Tắt tiếng trên máy này (chỉ phát ra TV)
   </label>
+  <label style="display:flex;gap:8px;align-items:center;margin-top:8px">
+    <input id="useapp" type="checkbox" style="width:auto"> Dùng app F88Tivi Audio (Windows): tắt loa máy tính mà TV vẫn có tiếng
+  </label>
 
   <button id="start">Chọn màn hình &amp; bắt đầu chiếu</button>
   <button id="stop" class="danger" style="display:none">Dừng chiếu</button>
@@ -35,8 +38,16 @@
   <small id="tips">
     Chọn <b>Toàn bộ màn hình</b> hoặc <b>Cửa sổ / Tab</b>. Để có tiếng: tích “Chia sẻ âm thanh hệ thống/tab” trong hộp thoại của Chrome/Edge.
     Trên macOS, trình duyệt chỉ chia sẻ được tiếng của tab.<br>
-    <b>Muốn máy tính im lặng, chỉ phát ra TV:</b> chia sẻ một <b>Tab Chrome/Edge</b> (tiếng của tab sẽ tự tắt trên máy này).
-    Nếu chọn Toàn bộ màn hình thì trình duyệt không tắt được tiếng loa máy tính, anh hạ âm lượng máy xuống 0 là TV vẫn có tiếng.
+    <b>Muốn máy tính im lặng, chỉ phát ra TV:</b>
+    <ol style="margin:6px 0 0 18px;padding:0">
+      <li>Dùng Chrome hoặc Edge, tích ô “Tắt tiếng trên máy này” ở trên.</li>
+      <li>Mở sẵn trang cần chiếu (phim, slide…) ở một tab riêng.</li>
+      <li>Bấm “Chọn màn hình”, chọn thẻ <b>Chrome Tab</b> (không chọn Toàn bộ màn hình), chọn đúng tab đó.</li>
+      <li>Tích “Chia sẻ âm thanh của tab” rồi bấm Chia sẻ. Loa máy sẽ im, TV vẫn có tiếng.</li>
+    </ol>
+    Nếu chọn <b>Toàn bộ màn hình</b>, tiếng lấy từ loa máy: tắt loa hoặc hạ âm lượng máy xuống 0 thì TV cũng mất tiếng.<br>
+    <b>Chiếu cả màn hình mà vẫn tắt được loa máy (Windows 10/11):</b> mở app <b>F88Tivi Audio</b>, chọn ứng dụng đang phát tiếng (Chrome, Edge…), bấm Bắt đầu,
+    rồi ở đây tích “Dùng app F88Tivi Audio”. Sau đó bạn tắt loa máy tính thoải mái, TV vẫn có tiếng.
   </small>
 </div></div>
 <script src="/config.js"></script>
@@ -53,10 +64,61 @@ $('code').addEventListener('input', (e) => (e.target.value = e.target.value.repl
 function status(t, cls = '') { const s = $('status'); s.textContent = t; s.className = 'status ' + cls; }
 function setRunning(on) {
   $('start').style.display = on ? 'none' : ''; $('stop').style.display = on ? '' : 'none';
-  $('code').disabled = $('mode').disabled = $('audio').disabled = $('mute').disabled = on;
+  $('code').disabled = $('mode').disabled = $('audio').disabled = $('mute').disabled = $('useapp').disabled = on;
+}
+
+// ---- Cầu nối âm thanh từ app Windows "F88Tivi Audio" (chạy trên máy này, cổng 48221) ----
+// App gửi PCM 16-bit 48 kHz stereo qua WebSocket localhost; trang đưa vào một track âm thanh để gửi sang TV.
+const BRIDGE_URL = 'ws://127.0.0.1:48221';
+let bridge = null;
+const WORKLET_SRC = `
+class P extends AudioWorkletProcessor {
+  constructor() {
+    super(); this.q = []; this.n = 0; this.off = 0;
+    this.port.onmessage = (e) => {
+      const a = new Int16Array(e.data); this.q.push(a); this.n += a.length / 2;
+      while (this.n > 14400 && this.q.length > 1) { const d = this.q.shift(); this.n -= (d.length - this.off) / 2; this.off = 0; } // giữ độ trễ < 0,3 giây
+    };
+  }
+  process(_, out) {
+    const o = out[0], L = o[0], R = o[1] || o[0];
+    for (let k = 0; k < L.length; k++) {
+      if (!this.q.length) { L[k] = 0; R[k] = 0; continue; }
+      const b = this.q[0]; L[k] = b[this.off] / 32768; R[k] = b[this.off + 1] / 32768; this.off += 2; this.n--;
+      if (this.off >= b.length) { this.q.shift(); this.off = 0; }
+    }
+    return true;
+  }
+}
+registerProcessor('pcm', P);`;
+
+async function openBridge() {
+  const ws = new WebSocket(BRIDGE_URL);
+  ws.binaryType = 'arraybuffer';
+  await new Promise((res, rej) => {
+    const t = setTimeout(() => { ws.close(); rej(new Error('timeout')); }, 3000);
+    ws.onopen = () => { clearTimeout(t); res(); };
+    ws.onerror = () => { clearTimeout(t); rej(new Error('refused')); };
+  });
+  const ctx = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
+  const url = URL.createObjectURL(new Blob([WORKLET_SRC], { type: 'text/javascript' }));
+  try { await ctx.audioWorklet.addModule(url); } finally { URL.revokeObjectURL(url); }
+  const node = new AudioWorkletNode(ctx, 'pcm', { numberOfInputs: 0, outputChannelCount: [2] });
+  const dest = ctx.createMediaStreamDestination();       // chỉ nối vào đây, KHÔNG nối ra loa
+  node.connect(dest);
+  await ctx.resume();
+  ws.onmessage = (ev) => { if (typeof ev.data !== 'string') node.port.postMessage(ev.data, [ev.data]); };
+  ws.onclose = () => { if (bridge && bridge.ws === ws && stream) status('⚠ App F88Tivi Audio đã ngắt, TV sẽ mất tiếng.', 'err'); };
+  return { ws, ctx, track: dest.stream.getAudioTracks()[0] };
+}
+function closeBridge() {
+  if (!bridge) return;
+  const b = bridge; bridge = null;
+  try { b.track.stop(); b.ws.onclose = null; b.ws.close(); b.ctx.close(); } catch {}
 }
 
 function stopAll(msg, cls) {
+  closeBridge();
   if (pc) { pc.close(); pc = null; }
   if (stream) { stream.getTracks().forEach((t) => { t.onended = null; t.stop(); }); stream = null; }
   if (ws) { ws.onclose = null; ws.close(); ws = null; }
@@ -74,7 +136,7 @@ async function start() {
   try {
     stream = await navigator.mediaDevices.getDisplayMedia({
       video: { frameRate: { ideal: 30, max: 60 } },
-      audio: $('audio').checked ? {
+      audio: ($('audio').checked && !$('useapp').checked) ? {
         echoCancellation: false, noiseSuppression: false, autoGainControl: false,
         suppressLocalAudioPlayback: $('mute').checked,   // Chrome/Edge: tắt tiếng trên máy gửi khi chia sẻ tab
       } : false,
@@ -82,6 +144,15 @@ async function start() {
     });
   } catch (e) { stream = null; return status('Bạn đã hủy chọn màn hình.', 'err'); }
 
+  if ($('useapp').checked) {
+    try {
+      bridge = await openBridge();
+      stream.addTrack(bridge.track);
+    } catch (e) {
+      stream.getTracks().forEach((t) => t.stop()); stream = null; closeBridge();
+      return status('Không kết nối được app F88Tivi Audio. Hãy mở app trên máy này, bấm Bắt đầu rồi thử lại (Chrome có thể hỏi quyền truy cập thiết bị trong mạng cục bộ: chọn Cho phép).', 'err');
+    }
+  }
   const vt = stream.getVideoTracks()[0];
   try { vt.contentHint = mode; } catch {}
   vt.onended = () => stopAll('Bạn đã dừng chia sẻ.');
@@ -158,7 +229,8 @@ async function adaptBitrate() {
     const s = $('status');
     s.textContent += relayed ? ' · qua máy chủ trung gian' : ' · kết nối trực tiếp';
     const at = stream && stream.getAudioTracks()[0];
-    if (at && $('mute').checked) {
+    if (bridge) s.textContent += ' · tiếng lấy từ app F88Tivi Audio (tắt loa máy vẫn có tiếng)';
+    else if (at && $('mute').checked) {
       const muted = at.getSettings && at.getSettings().suppressLocalAudioPlayback === true;
       s.textContent += muted ? ' · đã tắt tiếng trên máy này' : ' · máy này vẫn còn tiếng (hạ âm lượng máy xuống 0 hoặc chia sẻ Tab)';
     }

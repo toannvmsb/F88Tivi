@@ -4,3 +4,6 @@ screencast/tvapp/build/
 screencast/tvapp/debug.keystore
 screencast/tvapp/*.apk
 screencast/tvapp/*.idsig
+winaudio/bin/
+winaudio/obj/
+winaudio/publish/
