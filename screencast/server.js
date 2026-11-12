@@ -6,6 +6,7 @@
 //  ALLOWED_ORIGINS     danh sách origin được phép kết nối WebSocket, cách nhau bằng dấu phẩy
 //                      vd: https://ten-ban.netlify.app,https://ten-ban.netlify.app
 //  ICE_SERVERS_JSON    mảng JSON iceServers gửi cho client (STUN/TURN), giữ bí mật thông tin TURN ở đây
+//  CF_TURN_KEY_ID, CF_TURN_API_TOKEN   Cloudflare Realtime TURN (ưu tiên hơn ICE_SERVERS_JSON; server tự xin credential tạm thời)
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -22,6 +23,35 @@ let ICE_SERVERS = null;
 if (process.env.ICE_SERVERS_JSON) {
   try { ICE_SERVERS = JSON.parse(process.env.ICE_SERVERS_JSON); }
   catch { console.error('ICE_SERVERS_JSON không phải JSON hợp lệ, bỏ qua.'); }
+}
+
+// Cloudflare Realtime TURN: server tự xin credential tạm thời (hết hạn sau CF_TTL giây) bằng Key ID + API Token.
+// Nếu không cấu hình hoặc Cloudflare lỗi thì dùng ICE_SERVERS_JSON (nếu có).
+const CF_KEY_ID = process.env.CF_TURN_KEY_ID || '';
+const CF_TOKEN = process.env.CF_TURN_API_TOKEN || '';
+const CF_BASE = process.env.CF_TURN_API_BASE || 'https://rtc.live.cloudflare.com';
+const CF_TTL = 86400;
+let cfCache = null; // { servers, at }
+async function getIceServers() {
+  if (!CF_KEY_ID || !CF_TOKEN) return ICE_SERVERS;
+  if (cfCache && Date.now() - cfCache.at < (CF_TTL * 1000) / 2) return cfCache.servers;
+  try {
+    const r = await fetch(`${CF_BASE}/v1/turn/keys/${encodeURIComponent(CF_KEY_ID)}/credentials/generate-ice-servers`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${CF_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ttl: CF_TTL }),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    const servers = Array.isArray(j.iceServers) ? j.iceServers : j.iceServers ? [j.iceServers] : null;
+    if (!servers || !servers.length) throw new Error('phản hồi không có iceServers');
+    cfCache = { servers, at: Date.now() };
+    return servers;
+  } catch (e) {
+    console.error('Không lấy được credential Cloudflare TURN:', e.message);
+    return cfCache ? cfCache.servers : ICE_SERVERS;
+  }
 }
 
 const MIME = {
@@ -125,8 +155,11 @@ function attach(wss) {
     ws.ip = clientIp(req);
     ws.on('pong', () => { ws.alive = true; });
 
-    ws.on('message', (raw) => {
+    ws.on('message', async (raw) => {
       let m; try { m = JSON.parse(raw); } catch { return; }
+      // Lấy danh sách STUN/TURN trước khi đụng tới trạng thái phòng (thường lấy từ bộ nhớ đệm, rất nhanh).
+      const ice = (m.type === 'register' || m.type === 'join') && !ws.role ? await getIceServers() : null;
+      if (ws.readyState !== 1) return;
 
       if (m.type === 'register' && !ws.role) {
         let code = /^\d{6}$/.test(m.code || '') ? m.code : null;
@@ -137,7 +170,7 @@ function attach(wss) {
         const room = { receiver: ws, senders: old ? old.senders : new Map(), active: old ? old.active : null };
         rooms.set(code, room);
         ws.role = 'receiver'; ws.code = code;
-        send(ws, { type: 'registered', code, iceServers: ICE_SERVERS });
+        send(ws, { type: 'registered', code, iceServers: ice });
         pushRoster(room);
         return;
       }
@@ -151,7 +184,7 @@ function attach(wss) {
         ws.id = String(nextSenderId++);
         ws.name = cleanName(m.name, room);
         room.senders.set(ws.id, ws);
-        send(ws, { type: 'joined', id: ws.id, name: ws.name, iceServers: ICE_SERVERS });
+        send(ws, { type: 'joined', id: ws.id, name: ws.name, iceServers: ice });
         // Chỉ có một người và chưa ai chiếu: chiếu luôn, không cần TV chọn. Từ người thứ hai trở đi mới phải chờ.
         if (room.senders.size === 1 && !room.active) {
           room.active = ws.id;
@@ -235,7 +268,8 @@ function verifyClient(info) {
   server.listen(PORT, '0.0.0.0', () => {
     if (CLOUD) {
       console.log(`ScreenCast signaling (cloud) lắng nghe cổng ${PORT}`);
-      console.log(`ALLOWED_ORIGINS: ${ALLOWED_ORIGINS.join(', ') || '(không giới hạn)'}; TURN/STUN từ server: ${ICE_SERVERS ? 'có' : 'không'}`);
+      console.log(`ALLOWED_ORIGINS: ${ALLOWED_ORIGINS.join(', ') || '(không giới hạn)'}; TURN/STUN từ server: ${CF_KEY_ID && CF_TOKEN ? 'Cloudflare TURN' : ICE_SERVERS ? 'ICE_SERVERS_JSON' : 'không'}`);
+      if (CF_KEY_ID && CF_TOKEN) getIceServers().then((s) => console.log(`Cloudflare TURN: ${s && s !== ICE_SERVERS ? 'đã lấy credential OK' : 'LỖI, đang dùng ICE_SERVERS_JSON (nếu có)'}`));
       return;
     }
     console.log('\n=== ScreenCast LAN đang chạy ===');
