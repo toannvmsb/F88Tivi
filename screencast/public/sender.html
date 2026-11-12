@@ -210,6 +210,7 @@ async function start() {
 
 async function beginPeer(mode) {
   pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  scDiagAttach(pc);
   pc.onicecandidate = (e) => { if (e.candidate && ws) ws.send(JSON.stringify({ type: 'signal', data: { candidate: e.candidate } })); };
   pc.onconnectionstatechange = () => {
     if (!pc) return;
@@ -217,7 +218,7 @@ async function beginPeer(mode) {
       status('🟢 Đang chiếu lên TV' + (stream.getAudioTracks().length ? ' (có âm thanh)' : ' (không có âm thanh)'), 'ok');
       adaptBitrate();
     } else if (pc.connectionState === 'failed') {
-      backToWaiting('Không kết nối được tới TV (mạng chặn kết nối trực tiếp, cần TURN server). Đang chờ TV chọn lại…');
+      backToWaiting('Không kết nối được tới TV (mạng chặn kết nối trực tiếp, cần TURN server). Đang chờ TV chọn lại… ' + scDiagText(pc));
       if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'release' }));
     }
   };

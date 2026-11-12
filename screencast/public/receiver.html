@@ -119,6 +119,7 @@ async function startPlayback() {
 function newPeer() {
   closePeer();
   pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  scDiagAttach(pc);
   pc.onicecandidate = (e) => { if (e.candidate) ws.send(JSON.stringify({ type: 'signal', data: { candidate: e.candidate } })); };
   pc.ontrack = (e) => {
     if (video.srcObject !== e.streams[0]) { video.srcObject = e.streams[0]; showVideo(true); startPlayback(); }
@@ -128,7 +129,8 @@ function newPeer() {
   pc.onconnectionstatechange = () => {
     if (!pc) return;
     if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
-      closePeer(); setStatus('Mất kết nối. Chọn lại người chiếu.');
+      const diag = scDiagText(pc);
+      closePeer(); setStatus('Mất kết nối. Chọn lại người chiếu. ' + diag);
       if (activeId && ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'stop' }));
     }
   };
