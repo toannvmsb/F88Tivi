@@ -71,9 +71,28 @@ function handleHttp(req, res) {
 }
 
 // ---- Signaling ----
-// rooms: code -> { receiver: ws, sender: ws|null }
+// rooms: code -> { receiver: ws, senders: Map<id, ws>, active: id|null }
+// Nhiều máy gửi cùng vào một phòng (tối đa MAX_SENDERS); TV (receiver) chọn 1 người được chiếu mỗi lần.
 const rooms = new Map();
+const MAX_SENDERS = 8;
+let nextSenderId = 1;
 const send = (ws, msg) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg)); };
+
+function pushRoster(room) {
+  send(room.receiver, {
+    type: 'roster',
+    list: [...room.senders].map(([id, w]) => ({ id, name: w.name })),
+    active: room.active,
+  });
+}
+
+function cleanName(raw, room) {
+  let n = String(raw || '').replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 24);
+  if (!n) n = 'Khách';
+  const taken = new Set([...room.senders.values()].map((w) => w.name));
+  if (!taken.has(n)) return n;
+  for (let i = 2; ; i++) { const c = `${n} (${i})`; if (!taken.has(c)) return c; }
+}
 
 function newCode() {
   let c;
@@ -115,10 +134,11 @@ function attach(wss) {
         if (existing && existing.receiver.readyState === 1) code = null; // đang bị dùng
         if (!code) code = newCode();
         const old = rooms.get(code);
-        rooms.set(code, { receiver: ws, sender: old ? old.sender : null });
+        const room = { receiver: ws, senders: old ? old.senders : new Map(), active: old ? old.active : null };
+        rooms.set(code, room);
         ws.role = 'receiver'; ws.code = code;
         send(ws, { type: 'registered', code, iceServers: ICE_SERVERS });
-        if (old && old.sender) send(ws, { type: 'sender-joined' });
+        pushRoster(room);
         return;
       }
 
@@ -126,28 +146,66 @@ function attach(wss) {
         if (tooManyFails(ws.ip)) return send(ws, { type: 'error', reason: 'rate_limited' });
         const room = rooms.get(String(m.code || ''));
         if (!room || room.receiver.readyState !== 1) { addFail(ws.ip); return send(ws, { type: 'error', reason: 'not_found' }); }
-        if (room.sender && room.sender.readyState === 1) return send(ws, { type: 'error', reason: 'busy' });
-        room.sender = ws; ws.role = 'sender'; ws.code = String(m.code);
-        send(ws, { type: 'joined', iceServers: ICE_SERVERS });
-        send(room.receiver, { type: 'sender-joined' });
+        if (room.senders.size >= MAX_SENDERS) return send(ws, { type: 'error', reason: 'full' });
+        ws.role = 'sender'; ws.code = String(m.code);
+        ws.id = String(nextSenderId++);
+        ws.name = cleanName(m.name, room);
+        room.senders.set(ws.id, ws);
+        send(ws, { type: 'joined', id: ws.id, name: ws.name, iceServers: ICE_SERVERS });
+        // Chỉ có một người và chưa ai chiếu: chiếu luôn, không cần TV chọn. Từ người thứ hai trở đi mới phải chờ.
+        if (room.senders.size === 1 && !room.active) {
+          room.active = ws.id;
+          send(ws, { type: 'activated' });
+        }
+        pushRoster(room);
         return;
       }
 
-      if (m.type === 'signal' && ws.role) {
-        const room = rooms.get(ws.code);
-        if (!room) return;
-        send(ws.role === 'sender' ? room.receiver : room.sender, { type: 'signal', data: m.data });
+      const room = ws.role ? rooms.get(ws.code) : null;
+      if (!room) return;
+
+      if (ws.role === 'receiver' && room.receiver === ws) {
+        // TV chọn người được chiếu / dừng người đang chiếu / mời người ra khỏi phòng.
+        if (m.type === 'select') {
+          const s = room.senders.get(String(m.id));
+          if (!s || room.active) return;            // chỉ chọn khi chưa có ai đang chiếu
+          room.active = s.id;
+          send(s, { type: 'activated' });
+          pushRoster(room);
+        } else if (m.type === 'stop') {
+          const s = room.active && room.senders.get(room.active);
+          room.active = null;
+          if (s) send(s, { type: 'deactivated' });
+          pushRoster(room);
+        } else if (m.type === 'kick') {
+          const s = room.senders.get(String(m.id));
+          if (!s) return;
+          room.senders.delete(s.id);
+          if (room.active === s.id) room.active = null;
+          send(s, { type: 'kicked' });
+          pushRoster(room);
+          s.close();
+        } else if (m.type === 'signal') {
+          send(room.active && room.senders.get(room.active), { type: 'signal', data: m.data });
+        }
+      } else if (ws.role === 'sender' && room.senders.get(ws.id) === ws) {
+        if (m.type === 'release') {                 // người chiếu tự dừng, quay lại danh sách chờ
+          if (room.active === ws.id) { room.active = null; pushRoster(room); }
+        } else if (m.type === 'signal') {
+          if (room.active === ws.id) send(room.receiver, { type: 'signal', data: m.data });
+        }
       }
     });
 
     ws.on('close', () => {
       const room = rooms.get(ws.code);
       if (!room) return;
-      if (ws.role === 'sender' && room.sender === ws) {
-        room.sender = null;
-        send(room.receiver, { type: 'sender-left' });
+      if (ws.role === 'sender' && room.senders.get(ws.id) === ws) {
+        room.senders.delete(ws.id);
+        if (room.active === ws.id) room.active = null;
+        pushRoster(room);
       } else if (ws.role === 'receiver' && room.receiver === ws) {
-        send(room.sender, { type: 'receiver-left' });
+        for (const s of room.senders.values()) send(s, { type: 'receiver-left' });
         rooms.delete(ws.code);
       }
     });

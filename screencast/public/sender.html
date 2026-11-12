@@ -15,6 +15,9 @@
 
   <input id="code" type="text" inputmode="numeric" maxlength="6" placeholder="------" autocomplete="off">
 
+  <label for="name">Tên của bạn (hiện trên TV)</label>
+  <input id="name" type="text" maxlength="24" placeholder="Ví dụ: An - Phòng Kinh doanh" autocomplete="off">
+
   <label for="mode">Nội dung chiếu</label>
   <select id="mode">
     <option value="detail">Slide / tài liệu (chữ sắc nét)</option>
@@ -31,8 +34,8 @@
     <input id="useapp" type="checkbox" style="width:auto"> Dùng app F88Tivi Audio (Windows): tắt loa máy tính mà TV vẫn có tiếng
   </label>
 
-  <button id="start">Chọn màn hình &amp; bắt đầu chiếu</button>
-  <button id="stop" class="danger" style="display:none">Dừng chiếu</button>
+  <button id="start">Chọn màn hình &amp; vào phòng chiếu</button>
+  <button id="stop" class="danger" style="display:none">Thoát phòng</button>
   <div id="status" class="status"></div>
 
   <small id="tips">
@@ -54,17 +57,29 @@
 <script>
 const $ = (id) => document.getElementById(id);
 let ws, pc, stream;
+let presenting = false;   // true khi TV đã chọn mình và đang gửi hình
 let ICE_SERVERS = window.SC_CONFIG.ICE_SERVERS;
 scWake();
 
 const params = new URLSearchParams(location.search);
 $('code').value = (params.get('code') || localStorage.getItem('sc_send_code') || '').replace(/\D/g, '').slice(0, 6);
 $('code').addEventListener('input', (e) => (e.target.value = e.target.value.replace(/\D/g, '')));
+try { $('name').value = localStorage.getItem('sc_send_name') || ''; } catch {}
 
 function status(t, cls = '') { const s = $('status'); s.textContent = t; s.className = 'status ' + cls; }
 function setRunning(on) {
   $('start').style.display = on ? 'none' : ''; $('stop').style.display = on ? '' : 'none';
-  $('code').disabled = $('mode').disabled = $('audio').disabled = $('mute').disabled = $('useapp').disabled = on;
+  $('code').disabled = $('name').disabled = $('mode').disabled = $('audio').disabled = $('mute').disabled = $('useapp').disabled = on;
+  if (!on) presenting = false;
+  setStopLabel();
+}
+function setStopLabel() { $('stop').textContent = presenting ? 'Dừng chiếu (về danh sách chờ)' : 'Thoát phòng'; }
+
+// Dừng gửi hình nhưng vẫn ở trong phòng, chờ TV chọn lại.
+function backToWaiting(msg) {
+  if (pc) { pc.onconnectionstatechange = null; pc.close(); pc = null; }
+  presenting = false; setStopLabel();
+  status(msg || 'Đang ở trong phòng, chờ TV chọn bạn để chiếu…');
 }
 
 // ---- Cầu nối âm thanh từ app Windows "F88Tivi Audio" (chạy trên máy này, cổng 48221) ----
@@ -157,24 +172,35 @@ async function start() {
   try { vt.contentHint = mode; } catch {}
   vt.onended = () => stopAll('Bạn đã dừng chia sẻ.');
   localStorage.setItem('sc_send_code', code);
+  const name = $('name').value.trim();
+  try { localStorage.setItem('sc_send_name', name); } catch {}
   setRunning(true);
-  status('Đang kết nối tới TV…');
+  status('Đang vào phòng chiếu…');
 
   ws = new WebSocket(scWsUrl());
-  ws.onopen = () => ws.send(JSON.stringify({ type: 'join', code }));
+  ws.onopen = () => ws.send(JSON.stringify({ type: 'join', code, name }));
   ws.onclose = () => stopAll('Mất kết nối máy chủ.', 'err');
   ws.onmessage = async (ev) => {
     const m = JSON.parse(ev.data);
     if (m.type === 'error') {
-      stopAll(m.reason === 'busy' ? 'TV đang có người khác chiếu.'
+      stopAll(m.reason === 'full' ? 'Phòng đã đủ người (tối đa 8 máy). Hãy thử lại sau.'
         : m.reason === 'rate_limited' ? 'Nhập sai quá nhiều lần, vui lòng thử lại sau 1 phút.'
         : 'Không tìm thấy TV với mã này. Kiểm tra lại mã.', 'err');
     } else if (m.type === 'joined') {
       if (m.iceServers) ICE_SERVERS = m.iceServers;
-      await beginPeer(mode);
+      status('Đã vào phòng với tên “' + (m.name || name || 'Khách') + '”. Đang chờ TV chọn bạn để chiếu…', 'ok');
+    } else if (m.type === 'activated') {
+      // TV vừa chọn mình → bắt đầu gửi hình
+      presenting = true; setStopLabel();
+      status('Đang kết nối tới TV…');
+      try { await beginPeer(mode); } catch (e) { backToWaiting('Không bắt đầu chiếu được. Đang chờ TV chọn lại…'); ws.send(JSON.stringify({ type: 'release' })); }
+    } else if (m.type === 'deactivated') {
+      backToWaiting('TV đã dừng chiếu màn hình của bạn. Đang chờ được chọn lại…');
+    } else if (m.type === 'kicked') {
+      stopAll('Bạn đã được mời ra khỏi phòng chiếu.', 'err');
     } else if (m.type === 'receiver-left') {
       stopAll('TV đã ngắt kết nối.', 'err');
-    } else if (m.type === 'signal') {
+    } else if (m.type === 'signal' && pc) {
       const d = m.data;
       if (d.sdp) await pc.setRemoteDescription(d.sdp);
       else if (d.candidate) await pc.addIceCandidate(d.candidate).catch(() => {});
@@ -190,7 +216,10 @@ async function beginPeer(mode) {
     if (pc.connectionState === 'connected') {
       status('🟢 Đang chiếu lên TV' + (stream.getAudioTracks().length ? ' (có âm thanh)' : ' (không có âm thanh)'), 'ok');
       adaptBitrate();
-    } else if (pc.connectionState === 'failed') stopAll('Không kết nối được tới TV (mạng chặn kết nối trực tiếp, cần TURN server).', 'err');
+    } else if (pc.connectionState === 'failed') {
+      backToWaiting('Không kết nối được tới TV (mạng chặn kết nối trực tiếp, cần TURN server). Đang chờ TV chọn lại…');
+      if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'release' }));
+    }
   };
   stream.getTracks().forEach((t) => pc.addTrack(t, stream));
 
@@ -238,7 +267,12 @@ async function adaptBitrate() {
 }
 
 $('start').onclick = start;
-$('stop').onclick = () => stopAll();
+$('stop').onclick = () => {
+  if (presenting) {   // đang chiếu: dừng chiếu, về danh sách chờ (vẫn trong phòng)
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'release' }));
+    backToWaiting('Đã dừng chiếu. Đang chờ TV chọn bạn lần nữa…');
+  } else stopAll('Đã thoát phòng chiếu.');
+};
 </script>
 </body>
 </html>

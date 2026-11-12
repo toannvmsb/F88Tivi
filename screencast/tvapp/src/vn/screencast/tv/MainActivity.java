@@ -32,7 +32,7 @@ import android.widget.FrameLayout;
  *   adb shell am start -n vn.screencast.tv/.MainActivity --es server https://192.168.0.196:8443
  */
 public class MainActivity extends Activity {
-    private static final String DEFAULT_SERVER = "https://192.168.0.196:8443";
+    private static final String DEFAULT_SERVER = "https://f88tivi.netlify.app";
     private static final String PREFS = "screencast";
     private static final long RETRY_MS = 5000;
 

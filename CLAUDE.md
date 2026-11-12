@@ -62,9 +62,15 @@ winaudio/               app Windows "F88Tivi Audio" (.NET 8 WinForms): bắt ti�
 ## 4. Giao thức signaling (server.js)
 JSON qua WebSocket `/ws`:
 - TV → `{type:'register', code?}` ⇒ server `{type:'registered', code, iceServers}`; TV lưu mã trong `localStorage.sc_code`.
-- Máy gửi → `{type:'join', code}` ⇒ `{type:'joined', iceServers}` hoặc `{type:'error', reason:'not_found'|'busy'|'rate_limited'}`.
-- Hai bên trao `{type:'signal', data:{sdp|candidate}}`; máy gửi tạo offer, TV trả answer.
-- Sự kiện: `sender-joined`, `sender-left`, `receiver-left`.
+- **Nhiều máy gửi trong một phòng** (tối đa 8, `MAX_SENDERS`), TV chọn 1 người chiếu mỗi lần:
+  - Máy gửi → `{type:'join', code, name}` ⇒ `{type:'joined', id, name, iceServers}` hoặc `{type:'error', reason:'not_found'|'full'|'rate_limited'}`. Máy gửi chọn màn hình **trước** (cần thao tác người dùng), vào phòng chờ, chưa gửi hình.
+  - Server gửi TV `{type:'roster', list:[{id,name}], active}` mỗi khi phòng đổi.
+  - Người **đầu tiên** vào phòng trống thì được chiếu luôn (server tự `activated`); từ người thứ hai mới phải chờ TV chọn.
+  - TV → `{type:'select', id}` (chỉ khi chưa ai chiếu) ⇒ máy đó nhận `activated` rồi tạo offer; TV → `{type:'stop'}` ⇒ máy đó nhận `deactivated` (vẫn ở trong phòng); TV → `{type:'kick', id}` ⇒ máy đó nhận `kicked`. Máy gửi → `{type:'release'}` để tự dừng và về danh sách chờ.
+  - `signal` chỉ được chuyển giữa TV và người đang `active`.
+- Hai bên trao `{type:'signal', data:{sdp|candidate}}`; máy gửi (người active) tạo offer, TV trả answer.
+- Sự kiện: `receiver-left` (TV thoát, mọi máy gửi bị ngắt).
+- TV (`receiver.html`) tự tạo mã mới khi phòng trống sau khi từng có người; nút "Tạo mã mới" ngắt cả phòng. Trên TV: phím mũi tên chọn trong danh sách, OK để chiếu; khi đang chiếu bấm OK hiện thanh "Dừng chiếu".
 - Chống dò mã: mỗi IP tối đa 8 lần sai/phút. `maxPayload` 64 KB. Origin kiểm tra qua `ALLOWED_ORIGINS`.
 
 ## 5. Tính năng trang gửi (sender.html)
