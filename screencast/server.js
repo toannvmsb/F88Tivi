@@ -32,7 +32,9 @@ if (process.env.ICE_SERVERS_JSON) {
 // Tài khoản bị lỗi được tạm nghỉ CF_RETRY_MS rồi thử lại (tự quay về tài khoản 1 khi nó phục hồi).
 const CF_BASE = process.env.CF_TURN_API_BASE || 'https://rtc.live.cloudflare.com';
 const CF_TTL = 86400;
-const CF_RETRY_MS = Number(process.env.CF_TURN_RETRY_MS) || 5 * 60 * 1000;
+const CF_RETRY_MS = Number(process.env.CF_TURN_RETRY_MS) || 5 * 60 * 1000;   // nghỉ bao lâu rồi mới thử lại tài khoản vừa lỗi
+const CF_ATTEMPTS = Number(process.env.CF_TURN_ATTEMPTS) || 3;               // số lần thử liên tiếp trước khi bỏ sang tài khoản khác
+const CF_ATTEMPT_GAP_MS = 400;
 const CF_ACCOUNTS = [['', ''], ['_2', '_2']]
   .map(([k, t], i) => ({ n: i + 1, keyId: process.env['CF_TURN_KEY_ID' + k] || '', token: process.env['CF_TURN_API_TOKEN' + t] || '', cache: null, retryAt: 0 }))
   .filter((a) => a.keyId && a.token);
@@ -61,13 +63,20 @@ async function getIceServers() {
   for (const acc of CF_ACCOUNTS) {
     if (fresh(acc)) { pick = acc; break; }
     if (acc.retryAt > now) continue;                // đang tạm nghỉ vì vừa lỗi
-    try {
-      acc.cache = { servers: await fetchCf(acc), at: now };
-      acc.retryAt = 0; pick = acc; break;
-    } catch (e) {
-      acc.retryAt = now + CF_RETRY_MS;
-      console.error(`Cloudflare TURN tài khoản ${acc.n} không cấp được credential (${e.message}); tạm nghỉ ${CF_RETRY_MS / 60000} phút.`);
+    // Thử CF_ATTEMPTS lần liên tiếp; lần nào được thì dùng luôn, cả CF_ATTEMPTS lần đều lỗi mới bỏ sang tài khoản sau.
+    let lastErr;
+    for (let k = 1; k <= CF_ATTEMPTS && !pick; k++) {
+      try {
+        acc.cache = { servers: await fetchCf(acc), at: Date.now() };
+        acc.retryAt = 0; pick = acc;
+      } catch (e) {
+        lastErr = e;
+        if (k < CF_ATTEMPTS) await new Promise((r) => setTimeout(r, CF_ATTEMPT_GAP_MS));
+      }
     }
+    if (pick) break;
+    acc.retryAt = Date.now() + CF_RETRY_MS;       // chỉ để lần sau không phải thử lại tài khoản này ngay
+    console.error(`Cloudflare TURN tài khoản ${acc.n} lỗi ${CF_ATTEMPTS}/${CF_ATTEMPTS} lần (${lastErr.message}); chuyển sang tài khoản kế tiếp, thử lại tài khoản này sau ${Math.round(CF_RETRY_MS / 60000 * 10) / 10} phút.`);
   }
   if (!pick) pick = CF_ACCOUNTS.find((a) => a.cache);   // đều lỗi: dùng tạm credential cũ chưa hết hạn
   if (!pick) return ICE_SERVERS;
