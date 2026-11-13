@@ -7,6 +7,7 @@
 //                      vd: https://ten-ban.netlify.app,https://ten-ban.netlify.app
 //  ICE_SERVERS_JSON    mảng JSON iceServers gửi cho client (STUN/TURN), giữ bí mật thông tin TURN ở đây
 //  CF_TURN_KEY_ID, CF_TURN_API_TOKEN   Cloudflare Realtime TURN (ưu tiên hơn ICE_SERVERS_JSON; server tự xin credential tạm thời)
+//  CF_TURN_KEY_ID_2, CF_TURN_API_TOKEN_2   (tùy chọn) tài khoản Cloudflare thứ hai, dùng khi tài khoản 1 lỗi
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -26,32 +27,52 @@ if (process.env.ICE_SERVERS_JSON) {
 }
 
 // Cloudflare Realtime TURN: server tự xin credential tạm thời (hết hạn sau CF_TTL giây) bằng Key ID + API Token.
-// Nếu không cấu hình hoặc Cloudflare lỗi thì dùng ICE_SERVERS_JSON (nếu có).
-const CF_KEY_ID = process.env.CF_TURN_KEY_ID || '';
-const CF_TOKEN = process.env.CF_TURN_API_TOKEN || '';
+// Có thể khai báo 2 tài khoản (CF_TURN_KEY_ID/_API_TOKEN và CF_TURN_KEY_ID_2/_API_TOKEN_2): dùng tài khoản 1 trước,
+// nếu tài khoản 1 từ chối cấp credential thì chuyển sang tài khoản 2, rồi mới tới ICE_SERVERS_JSON (nếu có).
+// Tài khoản bị lỗi được tạm nghỉ CF_RETRY_MS rồi thử lại (tự quay về tài khoản 1 khi nó phục hồi).
 const CF_BASE = process.env.CF_TURN_API_BASE || 'https://rtc.live.cloudflare.com';
 const CF_TTL = 86400;
-let cfCache = null; // { servers, at }
+const CF_RETRY_MS = Number(process.env.CF_TURN_RETRY_MS) || 5 * 60 * 1000;
+const CF_ACCOUNTS = [['', ''], ['_2', '_2']]
+  .map(([k, t], i) => ({ n: i + 1, keyId: process.env['CF_TURN_KEY_ID' + k] || '', token: process.env['CF_TURN_API_TOKEN' + t] || '', cache: null, retryAt: 0 }))
+  .filter((a) => a.keyId && a.token);
+const CF_ENABLED = CF_ACCOUNTS.length > 0;
+let cfLastUsed = 0;
+
+async function fetchCf(acc) {
+  const r = await fetch(`${CF_BASE}/v1/turn/keys/${encodeURIComponent(acc.keyId)}/credentials/generate-ice-servers`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${acc.token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ttl: CF_TTL }),
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  const j = await r.json();
+  const servers = Array.isArray(j.iceServers) ? j.iceServers : j.iceServers ? [j.iceServers] : null;
+  if (!servers || !servers.length) throw new Error('phản hồi không có iceServers');
+  return servers;
+}
+
 async function getIceServers() {
-  if (!CF_KEY_ID || !CF_TOKEN) return ICE_SERVERS;
-  if (cfCache && Date.now() - cfCache.at < (CF_TTL * 1000) / 2) return cfCache.servers;
-  try {
-    const r = await fetch(`${CF_BASE}/v1/turn/keys/${encodeURIComponent(CF_KEY_ID)}/credentials/generate-ice-servers`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${CF_TOKEN}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ttl: CF_TTL }),
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const j = await r.json();
-    const servers = Array.isArray(j.iceServers) ? j.iceServers : j.iceServers ? [j.iceServers] : null;
-    if (!servers || !servers.length) throw new Error('phản hồi không có iceServers');
-    cfCache = { servers, at: Date.now() };
-    return servers;
-  } catch (e) {
-    console.error('Không lấy được credential Cloudflare TURN:', e.message);
-    return cfCache ? cfCache.servers : ICE_SERVERS;
+  if (!CF_ENABLED) return ICE_SERVERS;
+  const now = Date.now();
+  const fresh = (a) => a.cache && now - a.cache.at < (CF_TTL * 1000) / 2;
+  let pick = null;
+  for (const acc of CF_ACCOUNTS) {
+    if (fresh(acc)) { pick = acc; break; }
+    if (acc.retryAt > now) continue;                // đang tạm nghỉ vì vừa lỗi
+    try {
+      acc.cache = { servers: await fetchCf(acc), at: now };
+      acc.retryAt = 0; pick = acc; break;
+    } catch (e) {
+      acc.retryAt = now + CF_RETRY_MS;
+      console.error(`Cloudflare TURN tài khoản ${acc.n} không cấp được credential (${e.message}); tạm nghỉ ${CF_RETRY_MS / 60000} phút.`);
+    }
   }
+  if (!pick) pick = CF_ACCOUNTS.find((a) => a.cache);   // đều lỗi: dùng tạm credential cũ chưa hết hạn
+  if (!pick) return ICE_SERVERS;
+  if (pick.n !== cfLastUsed) { console.log(`Cloudflare TURN: đang dùng tài khoản ${pick.n}`); cfLastUsed = pick.n; }
+  return pick.cache.servers;
 }
 
 const MIME = {
@@ -268,8 +289,8 @@ function verifyClient(info) {
   server.listen(PORT, '0.0.0.0', () => {
     if (CLOUD) {
       console.log(`ScreenCast signaling (cloud) lắng nghe cổng ${PORT}`);
-      console.log(`ALLOWED_ORIGINS: ${ALLOWED_ORIGINS.join(', ') || '(không giới hạn)'}; TURN/STUN từ server: ${CF_KEY_ID && CF_TOKEN ? 'Cloudflare TURN' : ICE_SERVERS ? 'ICE_SERVERS_JSON' : 'không'}`);
-      if (CF_KEY_ID && CF_TOKEN) getIceServers().then((s) => console.log(`Cloudflare TURN: ${s && s !== ICE_SERVERS ? 'đã lấy credential OK' : 'LỖI, đang dùng ICE_SERVERS_JSON (nếu có)'}`));
+      console.log(`ALLOWED_ORIGINS: ${ALLOWED_ORIGINS.join(', ') || '(không giới hạn)'}; TURN/STUN từ server: ${CF_ENABLED ? `Cloudflare TURN (${CF_ACCOUNTS.length} tài khoản)` : ICE_SERVERS ? 'ICE_SERVERS_JSON' : 'không'}`);
+      if (CF_ENABLED) getIceServers().then((s) => { if (!s || s === ICE_SERVERS) console.log('Cloudflare TURN: LỖI hết các tài khoản, đang dùng ICE_SERVERS_JSON (nếu có)'); });
       return;
     }
     console.log('\n=== ScreenCast LAN đang chạy ===');

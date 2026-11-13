@@ -23,7 +23,7 @@ Cách dùng: TV mở app F88Tivi, hiện **mã 6 số + QR**. Máy gửi mở tr
 |---|---|---|
 | Trang web gửi/nhận | **Netlify** | https://f88tivi.netlify.app (`/sender.html`, `/receiver.html`) |
 | Server signaling (WebSocket) | **Render** (gói free, tự ngủ sau ~15 phút) | https://screencast-signal.onrender.com (`/healthz` trả `ok`) |
-| TURN | **Cloudflare Realtime TURN** (thay Metered; Metered chỉ là gói Trial 500 MB, đã hết hạn mức 2026-11) | server tự xin credential tạm thời qua biến Render `CF_TURN_KEY_ID` + `CF_TURN_API_TOKEN`; `ICE_SERVERS_JSON` (Metered) chỉ còn là dự phòng. **Không** nằm trong repo |
+| TURN | **Cloudflare Realtime TURN** (thay Metered; Metered chỉ là gói Trial 500 MB, đã hết hạn mức 2026-11) | server tự xin credential tạm thời qua biến Render `CF_TURN_KEY_ID` + `CF_TURN_API_TOKEN`; có thể thêm tài khoản dự phòng `CF_TURN_KEY_ID_2` + `CF_TURN_API_TOKEN_2` (chuyển sang khi tài khoản 1 bị từ chối cấp credential, thử lại tài khoản 1 sau 5 phút); `ICE_SERVERS_JSON` (Metered) là dự phòng cuối. **Không** nằm trong repo |
 | Repo | GitHub | https://github.com/toannvmsb/F88Tivi.git (nhánh `main`) |
 | TV thử nghiệm | Mi TV (Android 14), IP **192.168.0.199**, ADB cổng **5555** | gói app `vn.screencast.tv` |
 | Máy dev | Windows 11, IP LAN 192.168.0.196 | server LAN chạy cổng 8443 |
