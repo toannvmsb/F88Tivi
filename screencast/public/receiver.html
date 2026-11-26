@@ -99,7 +99,13 @@ function drawQR(code) {
   $('url').textContent = location.origin;
 }
 
+// Khi kết nối chập chờn: giữ hình cuối, chờ máy gửi tự nối lại (ICE restart) tối đa LOST_MS rồi mới bỏ.
+const LOST_MS = 40000;
+let lostTimer = null;
+function clearLost() { clearTimeout(lostTimer); lostTimer = null; }
+
 function closePeer() {
+  clearLost();
   if (pc) { pc.ontrack = pc.onicecandidate = pc.onconnectionstatechange = null; pc.close(); pc = null; }
   pending = [];
   video.srcObject = null;
@@ -128,17 +134,29 @@ function newPeer() {
   };
   pc.onconnectionstatechange = () => {
     if (!pc) return;
-    if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+    const st = pc.connectionState;
+    const giveUp = () => {
       const diag = scDiagText(pc);
       closePeer(); setStatus('Mất kết nối. Chọn lại người chiếu. ' + diag);
       if (activeId && ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'stop' }));
-    }
+    };
+    if (st === 'connected') {
+      pc._everConnected = true;
+      if (lostTimer) { clearLost(); $('hint').style.display = 'none'; }
+    } else if ((st === 'disconnected' || st === 'failed') && pc._everConnected) {
+      if (!lostTimer) {
+        showHint('Mất tín hiệu từ máy chiếu, đang kết nối lại…', LOST_MS);
+        lostTimer = setTimeout(() => { lostTimer = null; if (pc && pc.connectionState !== 'connected') giveUp(); }, LOST_MS);
+      }
+    } else if (st === 'failed' || st === 'closed') giveUp();
   };
 }
 
 async function onSignal(d) {
   if (d.sdp) {
-    newPeer();
+    // Offer mới từ đúng người đang chiếu khi đã có kết nối = máy gửi đang tự nối lại (ICE restart): dùng lại kết nối cũ, giữ hình.
+    const reuse = pc && d.sdp.type === 'offer' && pc.signalingState === 'stable' && pc._owner === activeId;
+    if (!reuse) { newPeer(); pc._owner = activeId; }
     await pc.setRemoteDescription(d.sdp);
     for (const c of pending) await pc.addIceCandidate(c).catch(() => {});
     pending = [];

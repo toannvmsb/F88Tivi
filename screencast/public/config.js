@@ -31,7 +31,8 @@ window.scDiagAttach = function (pc) {
 window.scDiagText = function (pc) {
   const d = pc && pc._diag;
   if (!d) return '';
-  return '[host ' + d.host + ' · srflx ' + d.srflx + ' · relay ' + d.relay + (d.errors.length ? ' · lỗi: ' + d.errors.join(', ') : '') + ']';
+  // Lỗi TURN chỉ đáng kể khi không lấy được địa chỉ relay nào; có relay thì các lỗi đó chỉ là cổng bị chặn, không phải nguyên nhân.
+  return '[host ' + d.host + ' · srflx ' + d.srflx + ' · relay ' + d.relay + (d.relay === 0 && d.errors.length ? ' · lỗi: ' + d.errors.join(', ') : '') + ']';
 };
 
 // Đánh thức server signaling (Render gói miễn phí tự ngủ khi không dùng).

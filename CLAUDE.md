@@ -78,6 +78,8 @@ JSON qua WebSocket `/ws`:
 - Bitrate video tối đa 12 Mbps; **tự hạ 3 Mbps khi đi qua TURN** (`adaptBitrate`) và hiện "kết nối trực tiếp / qua máy chủ trung gian".
 - Ô **"Tắt tiếng trên máy này"** dùng `suppressLocalAudioPlayback` (Chrome/Edge): chỉ có tác dụng khi chia sẻ **Tab**; chia sẻ toàn màn hình thì trình duyệt không tắt được loa máy gửi. Chưa kiểm chứng trên trình duyệt thật.
 - Tự "đánh thức" Render (`scWake`) khi mở trang.
+- **Giữ màn hình máy gửi không tắt** (Screen Wake Lock) khi đang ở phòng chiếu; trình duyệt chỉ giữ khi trang gửi đang hiển thị (chưa kiểm chứng trên Chrome/iPhone thật).
+- **Tự nối lại**: máy gửi thấy `disconnected`/`failed` thì ICE restart (gửi offer mới) trong tối đa 30 giây (`HEAL_MS`); TV nhận offer mới từ đúng người đang chiếu thì dùng lại kết nối cũ, giữ hình cuối và báo "Mất tín hiệu…", quá 40 giây (`LOST_MS`) mới về phòng chờ. Đã kiểm tra: hệ thống và Cloudflare TURN **không** tự ngắt khi màn hình đứng yên (thử 8 phút qua TURN vẫn kết nối). Lỗi TURN trong chuỗi chẩn đoán chỉ hiện khi `relay 0`.
 
 ## 6. App TV (MainActivity.java)
 WebView toàn màn hình mở `<server>/receiver.html`; giữ màn hình sáng; autoplay có tiếng; chỉ chấp nhận chứng chỉ tự ký của đúng host đã cấu hình; mất kết nối thì hiện thông báo và thử lại mỗi 5 giây. **BACK/MENU** trên remote mở hộp thoại đổi địa chỉ server. Tên app **F88Tivi**, có banner/icon logo F88.

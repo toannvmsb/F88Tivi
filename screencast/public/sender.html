@@ -72,11 +72,63 @@ function setRunning(on) {
   $('code').disabled = $('name').disabled = $('mode').disabled = $('audio').disabled = $('mute').disabled = $('useapp').disabled = on;
   if (!on) presenting = false;
   setStopLabel();
+  keepAwake(on);
 }
 function setStopLabel() { $('stop').textContent = presenting ? 'Dừng chiếu (về danh sách chờ)' : 'Thoát phòng'; }
 
+// ---- Giữ màn hình máy này không tự tắt/khóa trong lúc ở phòng chiếu (Screen Wake Lock) ----
+// Trình duyệt chỉ giữ được khi trang này đang hiển thị; trang bị ẩn thì tự nhả, hiện lại thì xin lại.
+let wakeLock = null;
+async function keepAwake(on) {
+  try {
+    if (on) {
+      if (wakeLock || !('wakeLock' in navigator) || document.visibilityState !== 'visible') return;
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    } else if (wakeLock) { const w = wakeLock; wakeLock = null; await w.release(); }
+  } catch { wakeLock = null; }
+}
+document.addEventListener('visibilitychange', () => { if (ws && document.visibilityState === 'visible') keepAwake(true); });
+
+// ---- Tự nối lại khi kết nối chập chờn (ICE restart), tối đa HEAL_MS rồi mới bỏ cuộc ----
+const HEAL_MS = 30000;
+let healTimer = null, healDeadline = 0;
+function clearHeal() { clearTimeout(healTimer); healTimer = null; healDeadline = 0; }
+async function iceRestart() {
+  if (!pc || !ws || ws.readyState !== 1) return;
+  try {
+    if (pc.restartIce) pc.restartIce();
+    const offer = await pc.createOffer({ iceRestart: true });
+    await pc.setLocalDescription(offer);
+    ws.send(JSON.stringify({ type: 'signal', data: { sdp: pc.localDescription } }));
+  } catch (e) {}
+}
+function onPeerTrouble() {
+  if (!pc) return;
+  if (!pc._everConnected) {            // chưa từng nối được: không phải chập chờn mà là mạng chặn
+    const diag = scDiagText(pc); clearHeal();
+    backToWaiting('Không kết nối được tới TV (mạng chặn kết nối trực tiếp, cần TURN server). Đang chờ TV chọn lại… ' + diag);
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'release' }));
+    return;
+  }
+  if (!healDeadline) { healDeadline = Date.now() + HEAL_MS; status('⚠ Kết nối chập chờn, đang tự nối lại…', 'err'); }
+  if (Date.now() > healDeadline) {
+    const diag = scDiagText(pc); clearHeal();
+    backToWaiting('Mất kết nối tới TV quá lâu. Đang chờ TV chọn lại… ' + diag);
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'release' }));
+    return;
+  }
+  clearTimeout(healTimer);
+  healTimer = setTimeout(async () => {
+    if (!pc || pc.connectionState === 'connected') return;
+    await iceRestart();
+    healTimer = setTimeout(onPeerTrouble, 8000);     // chưa lành thì thử lại, cho tới khi hết HEAL_MS
+  }, pc.connectionState === 'failed' ? 0 : 3000);  // "disconnected" thường tự lành trong vài giây
+}
+
 // Dừng gửi hình nhưng vẫn ở trong phòng, chờ TV chọn lại.
 function backToWaiting(msg) {
+  clearHeal();
   if (pc) { pc.onconnectionstatechange = null; pc.close(); pc = null; }
   presenting = false; setStopLabel();
   status(msg || 'Đang ở trong phòng, chờ TV chọn bạn để chiếu…');
@@ -133,6 +185,7 @@ function closeBridge() {
 }
 
 function stopAll(msg, cls) {
+  clearHeal();
   closeBridge();
   if (pc) { pc.close(); pc = null; }
   if (stream) { stream.getTracks().forEach((t) => { t.onended = null; t.stop(); }); stream = null; }
@@ -214,13 +267,12 @@ async function beginPeer(mode) {
   pc.onicecandidate = (e) => { if (e.candidate && ws) ws.send(JSON.stringify({ type: 'signal', data: { candidate: e.candidate } })); };
   pc.onconnectionstatechange = () => {
     if (!pc) return;
-    if (pc.connectionState === 'connected') {
+    const st = pc.connectionState;
+    if (st === 'connected') {
+      pc._everConnected = true; clearHeal();
       status('🟢 Đang chiếu lên TV' + (stream.getAudioTracks().length ? ' (có âm thanh)' : ' (không có âm thanh)'), 'ok');
       adaptBitrate();
-    } else if (pc.connectionState === 'failed') {
-      backToWaiting('Không kết nối được tới TV (mạng chặn kết nối trực tiếp, cần TURN server). Đang chờ TV chọn lại… ' + scDiagText(pc));
-      if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'release' }));
-    }
+    } else if (st === 'disconnected' || st === 'failed') onPeerTrouble();
   };
   stream.getTracks().forEach((t) => pc.addTrack(t, stream));
 
